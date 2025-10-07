@@ -1,0 +1,363 @@
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class GameManager : MonoBehaviour
+{
+    public static GameManager Instance;
+
+    [HideInInspector] public bool GameRunning = false;
+
+    void Awake()
+    {
+        if (Instance == null) Instance = this;
+        else Destroy(gameObject);
+        DontDestroyOnLoad(gameObject);
+    }
+
+    public void StartGame()
+    {
+        GameRunning = true;
+        Time.timeScale = 1f;
+    }
+
+    public void EndGame()
+    {
+        GameRunning = false;
+        Time.timeScale = 0f;
+    }
+
+    public void Restart()
+    {
+        Time.timeScale = 1f;
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+    }
+}
+using UnityEngine;
+using UnityEngine.UI;
+
+public class UIManager : MonoBehaviour
+{
+    public static UIManager Instance;
+
+    [Header("Panels")]
+    public GameObject StartPanel;
+    public GameObject HUDPanel;
+    public GameObject GameOverPanel;
+
+    [Header("Health & Shield UI")]
+    public Slider HealthSlider; // min 0 max 100
+    public Slider ShieldSlider; // min 0 max 50
+    public Text HealthText;
+    public Text ShieldText;
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
+    void Start()
+    {
+        ShowStart();
+    }
+
+    public void ShowStart()
+    {
+        StartPanel.SetActive(true);
+        HUDPanel.SetActive(false);
+        GameOverPanel.SetActive(false);
+        Time.timeScale = 0f;
+    }
+
+    public void OnStartButton()
+    {
+        StartPanel.SetActive(false);
+        HUDPanel.SetActive(true);
+        GameOverPanel.SetActive(false);
+        GameManager.Instance.StartGame();
+    }
+
+    public void ShowGameOver()
+    {
+        StartPanel.SetActive(false);
+        HUDPanel.SetActive(false);
+        GameOverPanel.SetActive(true);
+        GameManager.Instance.EndGame();
+    }
+
+    public void UpdateHealth(int current, int max)
+    {
+        HealthSlider.maxValue = max;
+        HealthSlider.value = current;
+        HealthText.text = $"Can: {current}/{max}";
+    }
+
+    public void UpdateShield(int current, int max)
+    {
+        ShieldSlider.maxValue = max;
+        ShieldSlider.value = current;
+        ShieldText.text = $"Kalkan: {current}/{max}";
+    }
+}
+using UnityEngine;
+
+[RequireComponent(typeof(CharacterController))]
+public class PlayerController : MonoBehaviour
+{
+    public float walkSpeed = 5f;
+    public float mouseSensitivity = 2f;
+    public Transform cameraTransform;
+    public Weapon weapon;
+
+    CharacterController cc;
+    float pitch = 0f;
+
+    public HealthComponent healthComponent;
+
+    void Start()
+    {
+        cc = GetComponent<CharacterController>();
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        // init UI display
+        UIManager.Instance.UpdateHealth(healthComponent.CurrentHealth, healthComponent.MaxHealth);
+        UIManager.Instance.UpdateShield(healthComponent.CurrentShield, healthComponent.MaxShield);
+    }
+
+    void Update()
+    {
+        if (!GameManager.Instance.GameRunning) return;
+
+        Move();
+        Look();
+        if (Input.GetButton("Fire1")) weapon?.TryFire();
+    }
+
+    void Move()
+    {
+        float h = Input.GetAxis("Horizontal");
+        float v = Input.GetAxis("Vertical");
+        Vector3 move = transform.right * h + transform.forward * v;
+        cc.SimpleMove(move * walkSpeed);
+    }
+
+    void Look()
+    {
+        float mx = Input.GetAxis("Mouse X") * mouseSensitivity;
+        float my = Input.GetAxis("Mouse Y") * mouseSensitivity;
+
+        transform.Rotate(Vector3.up * mx);
+
+        pitch -= my;
+        pitch = Mathf.Clamp(pitch, -85f, 85f);
+        cameraTransform.localEulerAngles = Vector3.right * pitch;
+    }
+
+    // called by other scripts when taking damage
+    public void TakeDamage(int amount)
+    {
+        healthComponent.ApplyDamage(amount);
+
+        UIManager.Instance.UpdateHealth(healthComponent.CurrentHealth, healthComponent.MaxHealth);
+        UIManager.Instance.UpdateShield(healthComponent.CurrentShield, healthComponent.MaxShield);
+
+        if (healthComponent.CurrentHealth <= 0)
+        {
+            Die();
+        }
+    }
+
+    void Die()
+    {
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+        UIManager.Instance.ShowGameOver();
+    }
+}
+using UnityEngine;
+
+public class Weapon : MonoBehaviour
+{
+    public Transform firePoint;
+    public float fireRate = 8f; // atış/ saniye
+    public float range = 100f;
+    public int damage = 20;
+    public LayerMask hitMask;
+    float nextFire = 0f;
+
+    public ParticleSystem muzzleFlash;
+    public AudioSource shotSound;
+
+    public void TryFire()
+    {
+        if (Time.time < nextFire) return;
+        nextFire = Time.time + 1f / fireRate;
+        Fire();
+    }
+
+    void Fire()
+    {
+        muzzleFlash?.Play();
+        shotSound?.Play();
+
+        Ray ray = new Ray(firePoint.position, firePoint.forward);
+        RaycastHit hit;
+        if (Physics.Raycast(ray, out hit, range, hitMask))
+        {
+            // Eğer vurulan objede HealthComponent varsa hasar uygula
+            HealthComponent hc = hit.collider.GetComponentInParent<HealthComponent>();
+            if (hc != null)
+            {
+                hc.ApplyDamage(damage);
+                // Eğer vurulan oyuncu ise UI güncellemesi (PlayerController zaten yapar)
+                PlayerController pc = hit.collider.GetComponentInParent<PlayerController>();
+                if (pc != null)
+                {
+                    UIManager.Instance.UpdateHealth(hc.CurrentHealth, hc.MaxHealth);
+                    UIManager.Instance.UpdateShield(hc.CurrentShield, hc.MaxShield);
+                }
+            }
+        }
+    }
+}
+using UnityEngine;
+
+public class HealthComponent : MonoBehaviour
+{
+    public int MaxHealth = 100;
+    public int MaxShield = 50;
+
+    public int CurrentHealth { get; private set; }
+    public int CurrentShield { get; private set; }
+
+    void Awake()
+    {
+        CurrentHealth = MaxHealth;
+        CurrentShield = MaxShield;
+    }
+
+    // damage uygulayan ortak metod
+    public void ApplyDamage(int amount)
+    {
+        if (amount <= 0) return;
+
+        // kalkan önce hasarı emer
+        if (CurrentShield > 0)
+        {
+            int left = CurrentShield - amount;
+            if (left >= 0)
+            {
+                CurrentShield = left;
+                return;
+            }
+            else
+            {
+                // kalkan bitti, kalan hasar sağa yansır
+                amount = -left;
+                CurrentShield = 0;
+            }
+        }
+
+        CurrentHealth -= amount;
+        if (CurrentHealth < 0) CurrentHealth = 0;
+    }
+
+    public void Heal(int hp)
+    {
+        CurrentHealth = Mathf.Clamp(CurrentHealth + hp, 0, MaxHealth);
+    }
+
+    public void RestoreShield(int s)
+    {
+        CurrentShield = Mathf.Clamp(CurrentShield + s, 0, MaxShield);
+    }
+}
+using UnityEngine;
+
+public class EnemyAI : MonoBehaviour
+{
+    public float detectionRange = 25f;
+    public float fireRate = 1f;
+    public int damage = 10;
+    public Transform firePoint;
+    public LayerMask sightMask;
+
+    HealthComponent health;
+    Transform player;
+    float nextFire = 0f;
+
+    void Start()
+    {
+        health = GetComponent<HealthComponent>();
+        GameObject p = GameObject.FindWithTag("Player");
+        if (p) player = p.transform;
+    }
+
+    void Update()
+    {
+        if (!GameManager.Instance.GameRunning) return;
+        if (player == null) return;
+
+        Vector3 dir = player.position - transform.position;
+        float dist = dir.magnitude;
+
+        if (dist <= detectionRange)
+        {
+            // Yönelme
+            Vector3 look = new Vector3(player.position.x, transform.position.y, player.position.z);
+            transform.LookAt(look);
+
+            // Ateş et (raycast hızlı vurma)
+            if (Time.time >= nextFire)
+            {
+                nextFire = Time.time + 1f / fireRate;
+                TryShoot();
+            }
+        }
+    }
+
+    void TryShoot()
+    {
+        // Basit hedef taraması: raycast direkt göğüs yönüne
+        Ray ray = new Ray(firePoint.position, (player.position + Vector3.up*0.8f) - firePoint.position);
+        RaycastHit hit;
+        if (Physics.Raycast(ray, out hit, detectionRange, ~0)) // tüm katmanlara bak
+        {
+            if (hit.collider.CompareTag("Player"))
+            {
+                // PlayerController üzerinde TakeDamage çağrısı
+                PlayerController pc = hit.collider.GetComponentInParent<PlayerController>();
+                if (pc != null)
+                {
+                    pc.TakeDamage(damage);
+                }
+                else
+                {
+                    // eğer PlayerController yok doğrudan HealthComponent varsa:
+                    HealthComponent hc = hit.collider.GetComponentInParent<HealthComponent>();
+                    if (hc != null)
+                    {
+                        hc.ApplyDamage(damage);
+                    }
+                }
+            }
+        }
+    }
+
+    // düşman hasar aldığında çağrılacak
+    void OnEnable()
+    {
+        // nothing
+    }
+
+    void UpdateHealthUI()
+    {
+        // istersen düşman sağlık çubuğu ekleyebilirsin
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        Gizmos.color = Color.red;
+        Gizmos.DrawWireSphere(transform.position, detectionRange);
+    }
+}
